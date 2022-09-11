@@ -3,9 +3,12 @@
 #include <MPQArchive.hpp>
 #include <DirectoryArchive.hpp>
 #include <CASCArchive.hpp>
+#include <StormLib.h>
 
-#include <filesystem>
 #include <cassert>
+#include <filesystem>
+#include <future>
+#include <omp.h>
 #include <regex>
 
 using namespace BlizzardArchive;
@@ -14,7 +17,7 @@ namespace fs = std::filesystem;
 ClientData::ClientData(std::string const& path, ClientVersion version, Locale locale, std::string const& local_path)
   : _version(version)
   , _open_mode(OpenMode::LOCAL)
-  , _storage_type((version > ClientVersion::WOTLK) ? StorageType::CASC : StorageType::MPQ)
+  , _storage_type((version > ClientVersion::MOP) ? StorageType::CASC : StorageType::MPQ)
   , _locale_mode(locale)
   , _path(path)
   , _local_path(ClientData::normalizeFilenameUnix(local_path))
@@ -36,7 +39,7 @@ ClientData::ClientData(std::string const& path, ClientVersion version, Locale lo
 ClientData::ClientData(std::string const& path, std::string const& cdn_cache_path, ClientVersion version, Locale locale, std::string const& local_path)
     : _version(version)
     , _open_mode(OpenMode::REMOTE)
-    , _storage_type((version > ClientVersion::WOTLK) ? StorageType::CASC : StorageType::MPQ)
+    , _storage_type((version > ClientVersion::MOP) ? StorageType::CASC : StorageType::MPQ)
     , _locale_mode(locale)
     , _path(path)
     , _local_path(ClientData::normalizeFilenameUnix(local_path))
@@ -84,7 +87,111 @@ void ClientData::loadMPQArchive(std::string const& mpq_path)
 
 void ClientData::initializeMPQStorage()
 {
-  for (auto const& filename : ClientData::ArchiveNameTemplates)
+  // Handle the two main storage differently.
+  //   After Cataclysm they started patching files.
+  if (_version < ClientVersion::CATA)
+    initializeMPQStoragePreCata();
+  else
+    initializeMPQStoragePostCata();
+}
+
+void ClientData::initializeCASCStorage()
+{
+  _listfile.initFromCSV((fs::path(_local_path) / "listfile.csv").string());
+
+  switch (_open_mode)
+  {
+    case OpenMode::LOCAL:
+    {
+      _archives.push_back(new Archive::CASCArchive(_path, "", _locale_mode, _open_mode, &_listfile));
+      break;
+    }
+    case OpenMode::REMOTE:
+    {
+      assert(_cdn_cache_path.has_value());
+      _archives.push_back(new Archive::CASCArchive(_path, _cdn_cache_path.value(), _locale_mode, _open_mode, &_listfile));
+      break;
+    }
+  }
+
+}
+
+void ClientData::validateLocale()
+{
+  switch (_storage_type)
+  {
+    case StorageType::MPQ:
+    {
+      if (static_cast<int>(_locale_mode)) // manual locale
+      [[unlikely]]
+      {
+        fs::path realmlist_path = fs::path(_path) / "Data"
+            / ClientData::Locales[static_cast<int>(_locale_mode) - 1];
+
+        if (!fs::exists(realmlist_path))
+        {
+          throw Exceptions::Locale::LocaleNotFoundError("Requested locale \""
+            + std::string(ClientData::Locales[static_cast<int>(_locale_mode) - 1].data()) +
+            "\" does not exist in the client directory."
+            "Be sure, that there is one containing the file \"realmlist.wtf\".");
+        }
+
+      }
+      else // auto locale
+      [[likely]]
+      {
+        for (unsigned i = 0; i < ClientData::Locales.size(); ++i)
+        {
+          fs::path realmlist_path = fs::path(_path) / "Data" / ClientData::Locales[i] / "realmlist.wtf";
+
+          if (fs::exists(realmlist_path))
+          {
+            _locale_mode = static_cast<Locale>(i + 1);
+            return;
+          }
+        }
+
+        fs::path configPath = fs::path(_path) / "WTF" / "Config.wtf";
+        if (fs::exists(configPath))
+        {
+          std::ifstream configFile(configPath);
+          std::string configSegment;
+          while (configFile >> configSegment)
+          {
+            configSegment = configSegment.substr(1, 4);
+            for (int i = 0; i < Locales.size(); i++)
+            {
+              if (!strcmp(configSegment.data(), Locales[i].data()))
+              {
+                _locale_mode = static_cast<Locale>(i + 1);
+                return;
+              }
+            }
+          }
+        }
+
+        throw Exceptions::Locale::LocaleNotFoundError("Automatic locale detection failed. "
+                                                      "The client directory does not contain any locale directory. Be "
+                                                      "sure, that there is one containing the file \"realmlist.wtf\".");
+      }
+      break;
+    }
+    case StorageType::CASC:
+    {
+      if (_locale_mode == Locale::AUTO)
+      {
+        throw Exceptions::Locale::IncorrectLocaleModeError("Automatic locale detection is not"
+                                                           " supported for CASC-based clients.");
+      }
+      break;
+    }
+  }
+  
+}
+
+void ClientData::initializeMPQStoragePreCata()
+{
+  for (auto const& filename : ClientData::PreCataArchiveNameTemplates)
   {
     std::string mpq_path = (fs::path(_path) / "Data" / filename).string();
 
@@ -125,83 +232,73 @@ void ClientData::initializeMPQStorage()
       loadMPQArchive(mpq_path);
     }
   }
-
- 
 }
 
-void ClientData::initializeCASCStorage()
+void ClientData::initializeMPQStoragePostCata()
 {
-  _listfile.initFromCSV((fs::path(_local_path) / "listfile.csv").string());
+  bool loadedPatch = false;
+  HANDLE handle;
+  auto loadOrPatchArchive = [&](const std::string& mpqPath, const std::string_view& prefix)
+    {
+      if (!loadedPatch)
+      {
+        loadMPQArchive(mpqPath);
+        if (_archives.size())
+        {
+          loadedPatch = true;
+          handle = ((Archive::MPQArchive*)*_archives.begin())->getHandle();
+        }
+      }
+      else
+      {
+        SFileOpenPatchArchive(handle, mpqPath.c_str(), prefix.data(), 0);
+      }
+    };
 
-  switch (_open_mode)
+  bool localeArchive;
+  std::string_view const& locale = ClientData::Locales[static_cast<int>(_locale_mode) - 1];
+  for (auto const& filename : ClientData::PostCataArchiveNameTemplates)
   {
-    case OpenMode::LOCAL:
+    localeArchive = false;
+    std::string mpq_path = (fs::path(_path) / "Data" / filename).string();
+
+    std::string::size_type location(std::string::npos);
+
+    do
     {
-      _archives.push_back(new Archive::CASCArchive(_path, "", _locale_mode, _open_mode, &_listfile));
-      break;
+      location = mpq_path.find("{locale}");
+      if (location != std::string::npos)
+      {
+        mpq_path.replace(location, 8, locale);
+      }
+      localeArchive = true;
+    } while (location != std::string::npos);
+
+    if (mpq_path.find("{number}") != std::string::npos)
+    {
+      location = mpq_path.find("{number}");
+      mpq_path.replace(location, 8, " ");
+      for (char j = '2'; j <= '9'; j++)
+      {
+        mpq_path.replace(location, 1, std::string(&j, 1));
+        loadOrPatchArchive(mpq_path, localeArchive ? locale : "base");
+      }
     }
-    case OpenMode::REMOTE:
+    else if (mpq_path.find("{character}") != std::string::npos)
     {
-      assert(_cdn_cache_path.has_value());
-      _archives.push_back(new Archive::CASCArchive(_path, _cdn_cache_path.value(), _locale_mode, _open_mode, &_listfile));
-      break;
+      location = mpq_path.find("{character}");
+      mpq_path.replace(location, 11, " ");
+      for (char c = 'a'; c <= 'z'; c++)
+      {
+        mpq_path.replace(location, 1, std::string(&c, 1));
+        loadOrPatchArchive(mpq_path, localeArchive ? locale : "base");
+      }
+    }
+    else
+    {
+      loadOrPatchArchive(mpq_path, localeArchive ? locale : "base");
     }
   }
-
-}
-
-void ClientData::validateLocale()
-{
-  switch (_storage_type)
-  {
-    case StorageType::MPQ:
-    {
-      if (static_cast<int>(_locale_mode)) // manual locale
-      [[unlikely]]
-      {
-        fs::path realmlist_path = fs::path(_path) / "Data"
-            / ClientData::Locales[static_cast<int>(_locale_mode) - 1] / "realmlist.wtf";
-
-        if (!fs::exists(realmlist_path))
-        {
-          throw Exceptions::Locale::LocaleNotFoundError("Requested locale \""
-            + std::string(ClientData::Locales[static_cast<int>(_locale_mode) - 1].data()) +
-            "\" does not exist in the client directory."
-            "Be sure, that there is one containing the file \"realmlist.wtf\".");
-        }
-
-      }
-      else // auto locale
-      [[likely]]
-      {
-        for (unsigned i = 0; i < ClientData::Locales.size(); ++i)
-        {
-          fs::path realmlist_path = fs::path(_path) / "Data" / ClientData::Locales[i] / "realmlist.wtf";
-
-          if (fs::exists(realmlist_path))
-          {
-            _locale_mode = static_cast<Locale>(i + 1);
-            return;
-          }
-        }
-
-        throw Exceptions::Locale::LocaleNotFoundError("Automatic locale detection failed. "
-                                                      "The client directory does not contain any locale directory. Be "
-                                                      "sure, that there is one containing the file \"realmlist.wtf\".");
-      }
-      break;
-    }
-    case StorageType::CASC:
-    {
-      if (_locale_mode == Locale::AUTO)
-      {
-        throw Exceptions::Locale::IncorrectLocaleModeError("Automatic locale detection is not"
-                                                           " supported for CASC-based clients.");
-      }
-      break;
-    }
-  }
-  
 }
 
 bool ClientData::readFile(Listfile::FileKey const& file_key, std::vector<char>& buffer)
@@ -272,11 +369,11 @@ std::string ClientData::getDiskPath(Listfile::FileKey const& file_key)
   {
     // try deducing filepath from listfile
     assert(file_key.hasFileDataID());
-    std::string filepath = _listfile.getPath(file_key.fileDataID());
+    std::string_view filepath = _listfile.getPath(file_key.fileDataID());
 
     if (!filepath.empty())
     {
-      return (fs::path(_local_path) / ClientData::normalizeFilenameUnix(filepath)).string();
+      return (fs::path(_local_path) / ClientData::normalizeFilenameUnix(filepath.data())).string();
     }
     else
     {

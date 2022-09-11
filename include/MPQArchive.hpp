@@ -29,6 +29,8 @@ namespace BlizzardArchive::Archive
     [[nodiscard]]
     bool exists(Listfile::FileKey const& file_key, Locale locale) const override;
 
+    HANDLE getHandle() const { return _handle; }
+
   private:
     HANDLE _handle = nullptr;
   };

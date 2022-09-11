@@ -45,14 +45,59 @@ CASCArchive::CASCArchive(std::string const& path
       args.Size = sizeof(CASC_OPEN_STORAGE_ARGS);
       args.szLocalPath = path.c_str();
       args.szCodeName = "wow";
-      args.szRegion = "us";
       args.PfnProgressCallback = nullptr;
       args.PtrProgressParam = nullptr;
       args.PfnProductCallback = nullptr;
       args.PtrProductParam = nullptr;
-      args.dwLocaleMask = 0;  // TODO: pass locale
       args.szBuildKey = nullptr;
       args.szCdnHostUrl = nullptr;
+      switch (locale)
+      {
+      case Locale::enGB:
+        args.szRegion = "eu";
+        args.dwLocaleMask = CASC_LOCALE_ENGB;
+        break;
+      case Locale::enUS:
+        args.szRegion = "us";
+        args.dwLocaleMask = CASC_LOCALE_ENUS;
+        break;
+      case Locale::deDE:
+        args.szRegion = "eu";
+        args.dwLocaleMask = CASC_LOCALE_DEDE;
+        break;
+      case Locale::koKR:
+        args.szRegion = "kr";
+        args.dwLocaleMask = CASC_LOCALE_KOKR; 
+       break;
+      case Locale::frFR:
+        args.szRegion = "eu";
+        args.dwLocaleMask = CASC_LOCALE_FRFR;
+        break;
+      case Locale::zhCN:
+        args.szRegion = "kr";
+        args.dwLocaleMask = CASC_LOCALE_ZHCN; 
+        break;
+      case Locale::zhTW:
+        args.szRegion = "kr";
+        args.dwLocaleMask = CASC_LOCALE_ZHTW; 
+        break;
+      case Locale::esES:
+        args.szRegion = "eu";
+        args.dwLocaleMask = CASC_LOCALE_ESES; 
+        break;
+      case Locale::esMX:
+        args.szRegion = "us";
+        args.dwLocaleMask = CASC_LOCALE_ESMX; 
+        break;
+      case Locale::ruRU:
+        args.szRegion = "eu";
+        args.dwLocaleMask = CASC_LOCALE_RURU; 
+        break;
+      default:
+        args.szRegion = "us";
+        args.dwLocaleMask = CASC_LOCALE_ALL;
+        break;
+      }
 
 
       if (!CascOpenStorageEx(nullptr, &args, false, &_handle))
