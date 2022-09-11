@@ -19,11 +19,11 @@ MPQArchive::MPQArchive(std::string const& path, Locale locale, Listfile::Listfil
   {
     size_t filesize = SFileGetFileSize(fh, nullptr); 
 
-    std::vector<char> readbuffer(filesize);
-    SFileReadFile(fh, readbuffer.data(), filesize, nullptr, nullptr);
+    char* readbuffer = (char*)malloc(filesize);
+    SFileReadFile(fh, readbuffer, filesize, nullptr, nullptr);
     SFileCloseFile(fh);
-
-    listfile->initFromFileList(readbuffer);
+    
+    listfile->initFromFileList(readbuffer, filesize);
   }
   
 }

@@ -14,7 +14,7 @@ ClientFile::ClientFile(Listfile::FileKey const& file_key, ClientData* client_dat
   , _external(false)
 {
 
-  if (client_data->version() != ClientVersion::WOTLK)
+  if (client_data->version() > ClientVersion::MOP)
   {
     _file_key.deduceOtherComponent(client_data->listfile());
   }
@@ -53,7 +53,7 @@ ClientFile::ClientFile(Listfile::FileKey const& file_key, ClientData* client_dat
 , _pointer(0)
 , _external(false)
 {
-  if (client_data->version() != ClientVersion::WOTLK)
+  if (client_data->version() > ClientVersion::MOP)
   {
     _file_key.deduceOtherComponent(client_data->listfile());
   }

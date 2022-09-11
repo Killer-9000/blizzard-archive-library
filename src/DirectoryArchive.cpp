@@ -25,11 +25,11 @@ std::string DirectoryArchive::getNormalizedFilepath(Listfile::FileKey const& fil
   {
     // try deducing filepath from listfile
     assert(file_key.hasFileDataID());
-    std::string filepath = _listfile->getPath(file_key.fileDataID());
+    std::string_view filepath = _listfile->getPath(file_key.fileDataID());
 
     if (!filepath.empty())
     {
-      local_path =  fs::path(_path) / ClientData::normalizeFilenameUnix(filepath);
+      local_path =  fs::path(_path) / ClientData::normalizeFilenameUnix(filepath.data());
     }
     else
     {

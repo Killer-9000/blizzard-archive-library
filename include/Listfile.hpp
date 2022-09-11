@@ -7,6 +7,7 @@
 #include <vector>
 #include <unordered_map>
 #include <compare>
+#include <tsl/robin_map.h>
 
 namespace BlizzardArchive::Listfile
 {
@@ -14,20 +15,24 @@ namespace BlizzardArchive::Listfile
   {
   public:
     Listfile() = default;
-    ~Listfile() = default;
+    ~Listfile()
+    {
+      if (_listfile) free(_listfile);
+    };
 
     void initFromCSV(std::string const& listfile_path);
-    void initFromFileList(std::vector<char> const& file_list_blob);
+    void initFromFileList(char* listfileData, size_t listfileSize);
 
     std::uint32_t getFileDataID(std::string const& filename) const;
-    std::string getPath(std::uint32_t file_data_id) const;
+    std::string_view getPath(std::uint32_t file_data_id) const;
 
-    std::unordered_map<std::string, std::uint32_t> const& pathToFileDataIDMap() const { return _path_to_fdid; };
-    std::unordered_map<std::uint32_t, std::string> const& fileDataIDToPathMap() const { return _fdid_to_path; };
+    tsl::robin_map<std::string_view, std::uint32_t> const& pathToFileDataIDMap() const { return _path_to_fdid; };
+    tsl::robin_map<std::uint32_t, std::string_view> const& fileDataIDToPathMap() const { return _fdid_to_path; };
 
   private:
-    std::unordered_map<std::string, std::uint32_t> _path_to_fdid;
-    std::unordered_map<std::uint32_t, std::string> _fdid_to_path;
+    tsl::robin_map<std::string_view, std::uint32_t> _path_to_fdid;
+    tsl::robin_map<std::uint32_t, std::string_view> _fdid_to_path;
+    char* _listfile = nullptr;
   };
 
   class FileKey

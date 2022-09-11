@@ -23,8 +23,16 @@ namespace BlizzardArchive
 
   enum class ClientVersion : char
   {
-    WOTLK = 0,
-    SL = 1,
+    VANILLA = 0,
+    TBC,
+    WOTLK,
+    CATA,
+    MOP,
+    WOD,
+    LEGION,
+    BFA,
+    SHADOWLANDS,
+    DRAGONFLIGHT
   };
 
   enum class StorageType : char
@@ -88,6 +96,8 @@ namespace BlizzardArchive
 
     [[nodiscard]]
     std::string const& path() const { return _path; }
+    [[nodiscard]]
+    std::string const& localPath() const { return _local_path; }
 
     [[nodiscard]]
     std::string getDiskPath(Listfile::FileKey const& file_key);
@@ -119,26 +129,56 @@ namespace BlizzardArchive
   public:
     inline static constexpr std::array<std::string_view, 10> Locales { "enGB", "enUS", "deDE", "koKR", "frFR", "zhCN", "zhTW", "esES", "esMX", "ruRU" };
 
-    // Templates in correct order for opening the wotlk client MPQs
-    inline static constexpr std::array<std::string_view, 14> ArchiveNameTemplates { 
-                                                                                    // common archives
-                                                                                      "common.MPQ"
-                                                                                    , "common-2.MPQ"
-                                                                                    , "expansion.MPQ"
-                                                                                    , "lichking.MPQ"
-                                                                                    , "patch.MPQ"
-                                                                                    , "patch-{number}.MPQ"
-                                                                                    , "patch-{character}.MPQ"
+    // Templates in correct order for opening the classic-wotlk client MPQs
+    inline static constexpr std::array<std::string_view, 30> PreCataArchiveNameTemplates { 
+      // common archives
+        "art.MPQ"
+      , "alternate.MPQ"
+      , "common.MPQ"
+      , "common-2.MPQ"
+      , "dbc.MPQ"
+      , "expansion.MPQ"
+      , "expansion{number}.MPQ"
+      , "fonts.MPQ"
+      , "interface.MPQ"
+      , "itemtexture.MPQ"
+      , "lichking.MPQ"
+      , "misc.MPQ"
+      , "model.MPQ"
+      , "terrain.MPQ"
+      , "texture.MPQ"
+      , "wmo.MPQ"
+      , "world.MPQ"
+      , "world2.MPQ"
+      , "patch.MPQ"
+      , "patch-{number}.MPQ"
+      , "patch-{character}.MPQ"
 
-                                                                                    // locale-specific archives
-                                                                                    , "{locale}/locale-{locale}.MPQ"
-                                                                                    , "{locale}/expansion-locale-{locale}.MPQ"
-                                                                                    , "{locale}/lichking-locale-{locale}.MPQ"
-                                                                                    , "{locale}/patch-{locale}.MPQ"
-                                                                                    , "{locale}/patch-{locale}-{number}.MPQ" 
-                                                                                    , "{locale}/patch-{locale}-{character}.MPQ"
-                                                                                    , "development.MPQ"
-                                                                                  };
+      // locale-specific archives
+      , "{locale}/expansion-locale-{locale}.MPQ"
+      , "{locale}/expansion{number}-locale-{locale}.MPQ"
+      , "{locale}/locale-{locale}.MPQ"
+      , "{locale}/lichking-locale-{locale}.MPQ"
+      , "{locale}/patch-{locale}.MPQ"
+      , "{locale}/patch-{locale}-{number}.MPQ" 
+      , "{locale}/patch-{locale}-{character}.MPQ"
+      , "development.MPQ"
+    };
+
+    inline static constexpr std::array<std::string_view, 11> PostCataArchiveNameTemplates{
+        "misc.MPQ"
+      , "texture.MPQ"
+      , "itemtexture.MPQ"
+      , "model.MPQ"
+      , "world.MPQ"
+      , "world2.MPQ"
+      , "interface.MPQ"
+      , "expansion{number}.MPQ"
+      , "{locale}/expansion{number}-locale-{locale}.MPQ"
+
+      , "wow-update-base-{patch}.MPQ"
+      , "{locale}/wow-update-{locale}-{patch}.MPQ"
+    };
 
   private:
 
@@ -146,6 +186,9 @@ namespace BlizzardArchive
     void loadMPQArchive(std::string const& mpq_path);
     void initializeCASCStorage();
     void validateLocale();
+      
+    void initializeMPQStoragePreCata();
+    void initializeMPQStoragePostCata();
 
     OpenMode _open_mode;
     StorageType _storage_type;

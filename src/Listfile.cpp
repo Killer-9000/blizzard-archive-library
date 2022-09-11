@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstdint>
+#include <intrin.h>
 
 using namespace BlizzardArchive::Listfile;
 
@@ -54,101 +55,207 @@ FileKey::FileKey(std::uint32_t file_data_id, Listfile* listfile)
 
 void Listfile::initFromCSV(std::string const& listfile_path)
 {
-  std::ifstream fstream;
-  fstream.open(listfile_path);
+  // If listfile is already allocated, free it.
+  if (_listfile) free(_listfile);
 
-  if (!fstream.is_open())
+  // Open the listfile for reading.
+  FILE* file = fopen(listfile_path.c_str(), "rb");
+
+  if (!file)
   {
     throw Exceptions::Listfile::ListfileNotFoundError();
+    return;
   }
-  else
+
+  // Get size, and allocate memory and read contents.
+  fseek(file, 0, SEEK_END);
+  long fileSize = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  _listfile = (char*)malloc((size_t)ceil((float)fileSize / sizeof(__m128i)) * sizeof(__m128i));
+
+  if (!_listfile)
   {
-    std::string line = "";
-    while (std::getline(fstream, line))
+    throw std::exception("Failed to allocate listfile.");
+    return;
+  }
+
+  if (fread(_listfile, 1, fileSize, file) != fileSize)
+  {
+    throw std::exception("Failed to read listfile contents.");
+    return;
+  }
+
+  // Quickly cleanup the contents for processing.
+  static const __m128i mmSlashs = _mm_set1_epi8('\\');
+  static const __m128i mmReturns = _mm_set1_epi8('\r');
+  static const __m128i mmNewline = _mm_set1_epi8('\n');
+  static const __m128i mmUpper = _mm_set1_epi8('Z');
+  static const __m128i mmLower = _mm_set1_epi8('A');
+  static const __m128i mmDiff = _mm_set1_epi8('a' - 'A');
+  __m128i mmChars;
+  __m128i mmMask;
+  char* start = _listfile;
+  char* end = _listfile + fileSize;
+  for (; start < end; start += sizeof(__m128i))
+  {
+    // Load chars into 128bit value.
+    mmChars = _mm_loadu_epi8(start);
+
+    // Check for uppercase
+    // Set mask to 1
+    // Anything less than lower should be 0
+    // Anything more than upper should be 0
+    mmMask = _mm_cmpeq_epi8(
+      _mm_cmpgt_epi8(mmLower, mmChars),
+      _mm_cmpgt_epi8(mmChars, mmUpper)
+    );
+    mmChars = _mm_blendv_epi8(mmChars, _mm_adds_epi8(mmChars, mmDiff), mmMask);
+
+    // Check for backslashes.
+    mmMask = _mm_cmpeq_epi8(mmChars, mmSlashs);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('/'), mmMask);
+
+    // Check for \r,\n and replace with null.
+    mmMask = _mm_cmpeq_epi8(mmChars, mmReturns);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('\0'), mmMask);
+    mmMask = _mm_cmpeq_epi8(mmChars, mmNewline);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('\0'), mmMask);
+
+    // Load 128bit value into chars.
+    _mm_storeu_epi8(start, mmChars);
+  }
+
+  // Get line count for pre-allocation.
+  size_t lineCount = 0;
+  for (char* c = _listfile; c < _listfile + fileSize; c++)
+    if (*c == '\0') lineCount++;
+  _path_to_fdid.reserve(lineCount);
+  _fdid_to_path.reserve(lineCount);
+
+  // Go line by line, mapping data.
+  char* forward = _listfile;
+  const char* current = _listfile;
+  char* colonPos = nullptr;
+  int uid;
+  while (forward < end)
+  {
+    if (*forward == ';')
+      colonPos = forward;
+    else if (*forward == '\0')
     {
-      std::string uid_str;
-      std::string filename;
-      std::uint32_t uid;
-
-      std::stringstream ss(line);
-
-      getline(ss, uid_str, ';');
-      getline(ss, filename);
-
-      uid = std::atoi(uid_str.c_str());
-
-      _path_to_fdid[ClientData::normalizeFilenameInternal(filename)] = uid;
-      _fdid_to_path[uid] = ClientData::normalizeFilenameWoW(filename);
-
+      // This warning is unjustified, since colon should be before null.
+      //   1234;testfile.blp\0
+#pragma warning (disable : 6001 6011)
+      *colonPos = '\0';
+#pragma warning (default : 6001 6011)
+      uid = atoi(current);
+      if (!_path_to_fdid.contains(current)) [[unlikely]]
+      {
+        _path_to_fdid[colonPos + 1] = uid;
+        _fdid_to_path[uid] = colonPos + 1;
+      }
+      while (*forward == '\0' && forward < end) forward++;
+      current = forward;
     }
-
+    forward++;
   }
 }
 
-void Listfile::initFromFileList(std::vector<char> const& file_list_blob)
+void Listfile::initFromFileList(char* listfileData, size_t listfileSize)
 {
-  // TODO: feels very sketchy, copied it from original Noggit.
-  // check if approach from initFromCSV() works any better (less reallocs maybe).
+  // TODO: This needs to be stored as an array of pointers, or move cleanup to MPQArchive responsability.
+  if (_listfile) free(_listfile);
 
-  std::string current;
-  for (char c : file_list_blob)
+  if (listfileSize <= 2)
+    return;
+
+  listfileSize = (size_t)ceil((float)listfileSize / sizeof(__m128i)) * sizeof(__m128i);
+  listfileData = (char*)realloc(listfileData, listfileSize);
+
+  if (!listfileData)
   {
-    if (c == '\r')
-    {
-      continue;
-    }
-    if (c == '\n')
-    {
-      _path_to_fdid[ClientData::normalizeFilenameInternal(current)] = 0;
-      current.resize(0);
-    }
-    else
-    {
-      current += c;
-    }
+    free(listfileData);
+    throw std::exception("Failed to reallocate listfile.");
+    return;
   }
 
-  if (!current.empty())
+  static const __m128i mmSlashs = _mm_set1_epi8('\\');
+  static const __m128i mmReturns = _mm_set1_epi8('\r');
+  static const __m128i mmNewline = _mm_set1_epi8('\n');
+  static const __m128i mmUpper = _mm_set1_epi8('Z');
+  static const __m128i mmLower = _mm_set1_epi8('A');
+  static const __m128i mmDiff = _mm_set1_epi8('a' - 'A');
+  __m128i mmChars;
+  __m128i mmMask;
+  char* start = listfileData;
+  char* end = listfileData + listfileSize;
+  for (; start < end; start += sizeof(__m128i))
   {
-    _path_to_fdid[ClientData::normalizeFilenameInternal(current)] = 0;
+    // Load chars into 128bit value.
+    mmChars = _mm_loadu_epi8(start);
+
+    // Check for uppercase
+    // Set mask to 1
+    // Anything less than lower should be 0
+    // Anything more than upper should be 0
+    mmMask = _mm_cmpeq_epi8(
+      _mm_cmpgt_epi8(mmLower, mmChars),
+      _mm_cmpgt_epi8(mmChars, mmUpper)
+    );
+    mmChars = _mm_blendv_epi8(mmChars, _mm_adds_epi8(mmChars, mmDiff), mmMask);
+
+    // Check for backslashes.
+    mmMask = _mm_cmpeq_epi8(mmChars, mmSlashs);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('/'), mmMask);
+
+    // Check for \r,\n and replace with null.
+    mmMask = _mm_cmpeq_epi8(mmChars, mmReturns);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('\0'), mmMask);
+    mmMask = _mm_cmpeq_epi8(mmChars, mmNewline);
+    mmChars = _mm_blendv_epi8(mmChars, _mm_set1_epi8('\0'), mmMask);
+
+    // Load 128bit value into chars.
+    _mm_storeu_epi8(start, mmChars);
+  }
+
+  size_t lineCount = 0;
+  for (char* c = listfileData; c < listfileData + listfileSize; c++)
+    if (*c == '\0') lineCount++;
+  _path_to_fdid.reserve(lineCount);
+
+  char* forward = listfileData;
+  const char* current = listfileData;
+  while (forward < end)
+  {
+    if (*forward == '\0')
+    {
+      if (!_path_to_fdid.contains(current))
+        _path_to_fdid[current] = 0;
+      while (*forward == '\0' && forward < end) forward++;
+      current = forward;
+    }
+    forward++;
   }
 }
 
 std::uint32_t Listfile::getFileDataID(std::string const& filename) const
 {
-  auto it = _path_to_fdid.find(filename);
-
-  if (it != _path_to_fdid.end())
-  {
-    return it->second;
-  }
-  else
-  {
-    return 0; // Not found
-  }
-
+  auto it = _path_to_fdid.find(filename.c_str());
+  return (it != _path_to_fdid.end()) ? it->second : 0;
 }
 
-std::string Listfile::getPath(std::uint32_t file_data_id) const
+std::string_view Listfile::getPath(std::uint32_t file_data_id) const
 {
   auto it = _fdid_to_path.find(file_data_id);
-
-  if (it != _fdid_to_path.end())
-  {
-    return it->second;
-  }
-  else
-  {
-    return ""; // Not found
-  }
-
+  return (it != _fdid_to_path.end()) ? it->second : "";
 }
 
 bool FileKey::deduceOtherComponent(const Listfile* listfile)
 {
   if (hasFileDataID() && !hasFilepath())
   {
-    std::string path = listfile->getPath(fileDataID());
+    std::string_view path = listfile->getPath(fileDataID());
 
     if (path.empty())
     {
